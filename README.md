@@ -1,44 +1,80 @@
-# admin-command-gateway · 管理员命令审批网关
+# admin-command-gateway
 
 中文 · [English](README_EN.md)
 
-让 AI agent 能"申请"执行管理员命令，但**每条命令必须由本机操作员在原生 Win32 弹窗中亲手批准**。agent 永远拿不到管理员权限——它只能提交请求，不能批准、不能绕过。
+admin-command-gateway 是一个 Windows 管理员命令审批网关。AI agent 可以提交
+需要管理员权限的命令，每条命令都必须由本机操作员在原生 Win32 弹窗中逐条
+批准后才会执行。agent 始终不持有管理员权限，只能提交请求，无法批准或绕过
+审批流程。
 
-## 特性
+目录
+----
 
-- **审批安全链路**：agent → MCP → 回环 HTTP（带令牌）→ 提权服务进程 → 用户弹窗审批 → 执行 → 结果回传。用户拒绝 / 关窗 / 超时都不执行
-- **原生 Win32 UI**：纯 Rust std 调用 Win32 API 自绘（无 GUI 框架依赖），托盘常驻、审批弹窗、管理面板、三页初始化向导
-- **MCP 标准接入**：stdio JSON-RPC，支持 2024-11-05 / 2025-06-18 协议，三个工具均带 inputSchema 与 annotations（`gateway_status` / `describe_admin_command` / `request_admin_command`）
-- **白名单自动放行**：exe 绝对路径（归一化，防 `C://` 类绕过）+ 参数正则整体匹配 + 工作目录一致，三者同时命中才免审批；UNC 工作目录强制人工
-- **策略目录 ACL 加固**：数据目录 SYSTEM/Administrators 完全控制、Users 只读，agent 改不了策略；审计链带 SHA-256 链式哈希 + HMAC 签名，篡改可检出
-- **幂等提交**：`client_request_id` 幂等键，15 分钟内重放返回首次结果，不会重复执行
-- **绿色便携**：数据存 exe 同级 `admin-gateway\` 目录，不写 AppData / 注册表，整文件夹可拷贝到任意路径或 U 盘
-- **单文件 ~2MB**：Rust + GNU 工具链编译，无运行时依赖
-- **DPI 感知**：per-monitor v2，按窗口实际 DPI 缩放
+1. 工作原理
+2. 组件
+3. 构建
+4. 使用
+5. MCP 接入
+6. 审批模式
+7. 安全边界
+8. 许可证
 
-## 构建
+工作原理
+--------
 
-需要 Rust（GNU 工具链 `stable-x86_64-pc-windows-gnu`）：
+```
+agent ──▶ mcp（stdio 桥接，无提权）
+      ──▶ 回环 HTTP（令牌认证）
+      ──▶ 提权服务进程（托盘常驻）
+      ──▶ 操作员弹窗（批准 / 拒绝）
+      ──▶ 执行并回传结果
+```
 
-```bash
+未获批准（拒绝、关闭窗口、超时）的请求不会执行。命令输出按不可信数据回传。
+
+组件
+----
+
+| 模块 | 职责 |
+|---|---|
+| `mcp.rs` | MCP 桥接器：stdio JSON-RPC，协议 2024-11-05 / 2025-06-18，工具带 inputSchema 与 annotations |
+| `http_server.rs` | 回环 HTTP 服务：命令执行、超时杀进程树、输出解码、幂等键 |
+| `config.rs` | 白名单（路径归一化 + 参数正则 + 工作目录）、策略目录 ACL 加固 |
+| `audit.rs` | 审计链：SHA-256 链式哈希 + HMAC 签名，篡改可检出 |
+| `popup.rs` / `tray.rs` / `panel.rs` / `wizard.rs` | 原生 Win32 界面：审批弹窗、托盘、管理面板、初始化向导 |
+| `win.rs` / `platform.rs` / `icon.rs` | Win32 API 封装、per-monitor v2 DPI、进程树终止、图标加载 |
+
+构建
+----
+
+需要 Rust（GNU 工具链）：
+
+```
 cargo +stable-x86_64-pc-windows-gnu build --release
 ```
 
-产物为 `target/release/admin-gateway.exe`。双击运行会自动弹 UAC 提权，首次启动进入初始化向导。
+产物为 `target/release/admin-gateway.exe`（约 2MB，无运行时依赖）。
+双击运行自动弹 UAC 提权，首次启动进入三页初始化向导。
 
-> 注：本仓库只含源码。exe 内嵌的图标资源（Windows 自带 UAC 盾牌，多尺寸 ico）与链接器配置未入库，构建默认无图标，功能不受影响。
+注：本仓库不含图标资源（发布版内嵌系统 UAC 盾牌多尺寸 ico）与链接器配置，
+从源码构建得到的产物没有内嵌图标，功能不受影响。
 
-## 子命令
+使用
+----
 
-| 命令 | 作用 |
+| 子命令 | 作用 |
 |---|---|
-| （无参数） | 双击启动：自动提权 → serve |
+| （无参数，双击） | 自动提权后进入服务模式 |
 | `serve` | 启动提权服务端（托盘 + HTTP 监听） |
-| `mcp` | 启动 MCP 桥接器（stdio，无提权，转发请求到服务端） |
+| `mcp` | 启动 MCP 桥接器（stdio，无提权） |
 | `wizard` | 重新运行初始化向导 |
 | `panel` | 直接打开管理面板（不启动服务） |
 
-## MCP 接入
+数据存放在 exe 同级的 `admin-gateway\` 目录，不写 AppData 与注册表，
+整个文件夹可拷贝到任意路径或 U 盘。
+
+MCP 接入
+--------
 
 ```json
 {
@@ -51,9 +87,11 @@ cargo +stable-x86_64-pc-windows-gnu build --release
 }
 ```
 
-环境变量与工作目录留空——令牌由桥接器从 `admin-gateway\connection.json` 自行读取。
+环境变量与工作目录留空：令牌由桥接器从 `admin-gateway\connection.json`
+自行读取，不进环境变量。
 
-## 审批模式
+审批模式
+--------
 
 | 模式 | 行为 |
 |---|---|
@@ -61,9 +99,23 @@ cargo +stable-x86_64-pc-windows-gnu build --release
 | `strict` | 全部弹窗 |
 | `deny` | 全部拒绝（离开电脑时） |
 
-## 安全边界
+在托盘右键菜单「审批模式」子菜单、管理面板或 config.json 中切换。
 
-- 命令输出回传给 agent，属于**不可信数据**，不得当作指令执行
-- 服务端必须提权运行；未提权时弹窗可被同用户进程伪造（仅调试可用 `--allow-unelevated`）
-- 显示在弹窗里的就是最终执行的绝对路径与参数，不存在"看到 A 实际执行 B"
-- 脚本类高危模式（`reg delete` / `sc delete` / `net user` / `icacls` / `takeown` 等）会附加风险提示
+安全边界
+--------
+
+- 服务端必须提权运行；未提权时弹窗可被同用户进程伪造点击
+  （`--allow-unelevated` 仅供调试，切勿日常使用）。
+- 白名单要求 exe 绝对路径（归一化，防 `C://` 类绕过）、参数正则整体匹配、
+  工作目录一致三者同时命中；UNC 工作目录强制转人工。
+- 策略目录 ACL：SYSTEM/Administrators 完全控制，Users 只读，agent 改不了策略。
+- 弹窗显示的就是最终执行的绝对路径与参数，不存在"看到 A 实际执行 B"。
+- 脚本类高危模式（`reg delete`、`sc delete`、`net user`、`icacls`、
+  `takeown` 等）附加风险提示。
+- `client_request_id` 幂等键：15 分钟内重放返回首次结果，不会重复执行。
+- 命令输出属于不可信数据，不得当作指令执行。
+
+许可证
+------
+
+MIT，见 [LICENSE](LICENSE)。
