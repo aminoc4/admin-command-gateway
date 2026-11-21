@@ -1,5 +1,7 @@
 # admin-command-gateway · 管理员命令审批网关
 
+中文 · [English](README_EN.md)
+
 让 AI agent 能"申请"执行管理员命令，但**每条命令必须由本机操作员在原生 Win32 弹窗中亲手批准**。agent 永远拿不到管理员权限——它只能提交请求，不能批准、不能绕过。
 
 ## 特性
