@@ -1,0 +1,16 @@
+# 构建产物
+target/
+
+# 构建脚本与机器相关配置（不入库）
+build.bat
+build.rs
+.cargo/
+
+# 开发辅助脚本
+tools/
+
+# 图标资源（从系统提取的产物）
+assets/
+
+# 运行数据
+admin-gateway/
